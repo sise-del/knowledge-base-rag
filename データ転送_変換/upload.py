@@ -7,11 +7,8 @@ from datetime import datetime, timezone
 # 保存先URLを設定
 # ==========================================
 bucket_name = 'rag-document-535179725289-ap-northeast-1-an'
-s3_folder = 'TEST/ｔｔｔ/' 
+s3_folder = 'TEST/伊勢/' 
 
-# ------------------------------------------
-# 0. 実行環境の判定（手動コマンドプロンプト vs タスクスケジューラ）
-# ------------------------------------------
 USE_TQDM = False
 if sys.stdout.isatty():
     try:
@@ -19,19 +16,18 @@ if sys.stdout.isatty():
         USE_TQDM = True
     except ImportError:
         print("【提示】tqdm ライブラリをインポートできません。通常のログモードで実行します。")
-        print("（pip install tqdm を実行すると進捗バーが有効になります）")
 
-# AWS S3のクライアントを作成
 s3 = boto3.client('s3')
 
-# 引数がある場合はそれを使う、なければ現在のフォルダを使う
 if len(sys.argv) > 1:
     given_folder = os.path.abspath(sys.argv[1])
 else:
     given_folder = os.path.dirname(os.path.abspath(__file__))
 
-# ★【修正】指定されたフォルダ内に「変換後」フォルダがあれば、そこをスキャン対象のルートにする
-# これにより、S3側に「変換後」という余計な階層が作られず、中身だけが転送されます
+# ★【修正】指定されたフォルダ名（例：「ナレッジ変換」）を取得
+folder_name = os.path.basename(given_folder)
+
+# 指定されたフォルダ内に「変換後」フォルダがあれば、そこをスキャン対象のルートにする
 if os.path.exists(os.path.join(given_folder, "変換後")):
     local_folder = os.path.join(given_folder, "変換後")
 else:
@@ -55,34 +51,32 @@ try:
                 }
 except Exception as e:
     print(f"【エラー】S3情報の取得に失敗しました: {e}")
-    print("安全のため、同期処理を中断します。")
     exit(1)
 
 # ------------------------------------------
-# 2. ローカルファイルをスキャン（タスクのリストアップ）
+# 2. ローカルファイルをスキャン
 # ------------------------------------------
 print(f"ローカルのフォルダ [{local_folder}] 内をスキャン中...")
 
-tasks_to_upload = []  # アップロード対象を格納するリスト
+tasks_to_upload = []
 skipped_count = 0
 local_s3_keys = set()
 
 for root, dirs, files in os.walk(local_folder):
-    # 隠しフォルダ（.で始まるもの）を探索対象から除外
     dirs[:] = [d for d in dirs if not d.startswith('.')]
     
     for file in files:
-        if file.startswith('.') or file == os.path.basename(__file__):
+        if file.startswith('.'):
             continue
             
         local_path = os.path.join(root, file)
-        # local_folder（＝「変換後」フォルダ）を起点にするため、S3キーに「変換後」の文字が入りません
         relative_path = os.path.relpath(local_path, local_folder)
-        s3_key = os.path.join(s3_folder, relative_path).replace("\\", "/")
+        
+        # ★【修正】S3のキーに元のフォルダ名（folder_name）を含めることで「フォルダごと」アップします
+        s3_key = os.path.join(s3_folder, folder_name, relative_path).replace("\\", "/")
         
         local_s3_keys.add(s3_key)
         
-        # 差分チェック
         local_size = os.path.getsize(local_path)
         local_mtime = os.path.getmtime(local_path)
         local_dt = datetime.fromtimestamp(local_mtime, timezone.utc)
@@ -93,17 +87,31 @@ for root, dirs, files in os.walk(local_folder):
                 skipped_count += 1
                 continue
         
-        # 差分があった場合のみ、アップロードタスクに追加
         tasks_to_upload.append((local_path, s3_key))
 
 # ------------------------------------------
 # 3. 削除対象ファイルのリストアップ
 # ------------------------------------------
-tasks_to_delete = []  # 削除対象を格納するリスト
+tasks_to_delete = []
+# 今回アップロードしたフォルダ全体のS3上のルートパス（例: TEST/ｔｔｔ/ナレッジ変換/）
+s3_root = f"{s3_folder}{folder_name}/".replace("//", "/")
 
 for s3_key in s3_files.keys():
     if s3_key.endswith('/'):
         continue
+        
+    # ★【修正】今回のフォルダ（例: ナレッジ変換）の配下にあるファイルだけを削除検証の対象にする
+    # これにより、S3の同じ場所に別フォルダがあっても誤って削除するのを防げます
+    if not s3_key.startswith(s3_root):
+        continue
+        
+    # アップしたフォルダ直下からの相対パスを切り出す（例: ナレッジ変換/ より後ろ）
+    relative_s3_path = s3_key[len(s3_root):]
+    
+    # ★【修正】アップしたフォルダの直下（一番上の階層）にあるファイルは削除判断させない
+    if "/" not in relative_s3_path:
+        continue
+        
     if s3_key not in local_s3_keys:
         tasks_to_delete.append(s3_key)
 
@@ -111,7 +119,6 @@ for s3_key in s3_files.keys():
 # 4. アップロード処理の実行
 # ------------------------------------------
 uploaded_count = 0
-
 if tasks_to_upload:
     if USE_TQDM:
         for local_path, s3_key in tqdm(tasks_to_upload, desc="アップロード中", unit="file"):
@@ -136,7 +143,6 @@ else:
 # 5. 削除処理の実行
 # ------------------------------------------
 deleted_count = 0
-
 if tasks_to_delete:
     if USE_TQDM:
         for s3_key in tqdm(tasks_to_delete, desc="不要ファイルの削除中", unit="file"):
@@ -157,9 +163,6 @@ if tasks_to_delete:
 else:
     print("S3側に削除すべき古いファイルはありません。")
 
-# ------------------------------------------
-# 6. 結果出力
-# ------------------------------------------
 print(f"[{datetime.now()}] すべての処理が完了しました！")
 print(f"  - アップロード成功: {uploaded_count} / {len(tasks_to_upload)} 件")
 print(f"  - スキップ(変更なし): {skipped_count} 件")

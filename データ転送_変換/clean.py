@@ -3,16 +3,11 @@ import sys
 import subprocess
 import shutil
 import getpass
+from moviepy import VideoFileClip
+import whisper
 
+# ここのパスなくしたい
 os.environ["PATH"] += os.pathsep + r"C:\Users\s_ise\Desktop\調査用\knowledge-base-rag\ffmpeg-2026-06-15-git-44d082edc8-essentials_build\bin"
-
-try:
-    from moviepy import VideoFileClip
-    import whisper
-except ImportError as e:
-    print(f"【エラー】ライブラリの読み込みに失敗しました: {e}")
-    print("コマンドプロンプトで以下を実行してください：\npip install moviepy openai-whisper")
-    exit(1)
 
 # ==========================================
 # 1. 自動設定
@@ -24,8 +19,9 @@ if len(sys.argv) > 1:
 else:
     TARGET_DIR = f"C:\\Users\\{username}\\Desktop\\ナレッジ変換"
 
-OUTPUT_BASE_DIR = os.path.join(TARGET_DIR, "変換後")
-# ★ trash_backup の設定を削除しました
+# ★変更：固定の「変換後」ではなく、対象フォルダと同じ名前を取得して下の階層のパスを設定
+TARGET_FOLDER_NAME = os.path.basename(TARGET_DIR)
+OUTPUT_BASE_DIR = os.path.join(TARGET_DIR, TARGET_FOLDER_NAME)
 
 # Windows用：LibreOfficeの標準インストールパス
 LIBREOFFICE_PATH = r"C:\Program Files\LibreOffice\program\soffice.exe"
@@ -54,8 +50,8 @@ def clean_folder(target_path):
     print(f"出力先フォルダ: {OUTPUT_BASE_DIR}\n")
 
     for root, dirs, files in os.walk(target_path):
-        # 「変換後」フォルダ自体を検索対象から除外（無限ループ防止）
-        dirs[:] = [d for d in dirs if d != '変換後' and not d.startswith('.')]
+        # ★変更：新しく作った出力フォルダ自体を検索対象から除外（無限ループ防止）
+        dirs[:] = [d for d in dirs if d != TARGET_FOLDER_NAME and not d.startswith('.')]
 
         relative_path = os.path.relpath(root, target_path)
         current_output_dir = os.path.abspath(os.path.join(OUTPUT_BASE_DIR, relative_path))
@@ -78,7 +74,7 @@ def clean_folder(target_path):
             # ① Excel / パワポを見つけたらPDF変換
             # ----------------------------------------------------
             if file_lower.endswith(OFFICE_EXTENSIONS):
-                # ★追加：すでに変換後のPDFが存在するならスキップ
+                # すでに変換後のPDFが存在するならスキップ
                 expected_pdf = os.path.join(current_output_dir, base_name + ".pdf")
                 if os.path.exists(expected_pdf):
                     print(f"   -> [スキップ] すでにPDFが存在します: {file_name}")
@@ -86,14 +82,13 @@ def clean_folder(target_path):
 
                 print(f"【PDF変換】Officeファイルを変換します: {file_name}")
                 convert_to_pdf_local(file_path, current_output_dir)
-                # ★ move_to_trash の呼び出しを削除しました
                 continue
 
             # ----------------------------------------------------
             # ② 動画 / 音声を見つけたら文字起こし
             # ----------------------------------------------------
             if file_lower.endswith(VIDEO_EXTENSIONS):
-                # ★追加：すでに文字起こしテキストが存在するならスキップ
+                # すでに文字起こしテキストが存在するならスキップ
                 expected_txt = os.path.join(current_output_dir, base_name + ".txt")
                 if os.path.exists(expected_txt):
                     print(f"   -> [スキップ] すでにテキストが存在します: {file_name}")
@@ -101,7 +96,6 @@ def clean_folder(target_path):
 
                 print(f"【文字起こし】動画/音声をテキスト化します: {file_name}")
                 transcribe_video(file_path, model, current_output_dir)
-                # ★ move_to_trash の呼び出しを削除しました
                 continue
 
 # ==========================================
@@ -151,8 +145,6 @@ def transcribe_video(file_path, model, output_dir):
         if os.path.exists(audio_path):
             os.remove(audio_path)
         return False
-
-# ★ move_to_trash 関数自体を削除しました
 
 if __name__ == "__main__":
     clean_folder(TARGET_DIR)
